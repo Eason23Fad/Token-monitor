@@ -20,13 +20,22 @@ const proxyStats = {
 
 // ─── 窗口 ──────────────────────────────────────
 function createWindow() {
+  const { screen } = require('electron');
+  const disp = screen.getPrimaryDisplay();
+  const cx = disp.workArea.x + Math.round((disp.workArea.width - 380) / 2);
+  const cy = disp.workArea.y + Math.round((disp.workArea.height - 340) / 2);
+
   win = new BrowserWindow({
     width: 380,
     height: 340,
+    x: cx,
+    y: cy,
     frame: false,
     alwaysOnTop: true,
     resizable: false,
     backgroundColor: '#0d0d1a',
+    show: false,
+    icon: path.join(__dirname, 'icon.ico'),
     webPreferences: {
       preload: path.join(__dirname, 'preload.js'),
       nodeIntegration: false,
@@ -34,6 +43,10 @@ function createWindow() {
     },
   });
   win.loadFile('index.html');
+  win.once('ready-to-show', () => {
+    win.show();
+    win.focus();
+  });
   win.setVisibleOnAllWorkspaces(true);
 }
 
@@ -182,9 +195,10 @@ function startProxy(port) {
   return new Promise((resolve) => {
     proxyServer.listen(port, () => {
       proxyStats.startTime = Date.now();
+      console.log('[ds-monitor] 代理已启动，端口: ' + port);
       resolve(true);
     });
-    proxyServer.on('error', () => {
+    proxyServer.on('error', (err) => {
       proxyServer = null;
       resolve(false);
     });
@@ -240,7 +254,14 @@ ipcMain.handle('api:getProxyStats', async () => {
 });
 
 ipcMain.handle('api:startProxy', async () => {
-  return await startProxy(PROXY_PORT);
+  const BASE_PORT = 3456;
+  for (let attempt = 0; attempt < 5; attempt++) {
+    const tryPort = BASE_PORT + attempt;
+    if (await startProxy(tryPort)) {
+      return { ok: true, port: tryPort };
+    }
+  }
+  return { ok: false, port: BASE_PORT };
 });
 
 ipcMain.handle('api:stopProxy', async () => {
@@ -261,9 +282,25 @@ ipcMain.on('close', () => win?.close());
 
 // ─── 启动 ───────────────────────────────────────
 app.whenReady().then(async () => {
+  console.log('[ds-monitor] 应用启动中...');
+  console.log('[ds-monitor] __dirname:', __dirname);
+  console.log('[ds-monitor] preload:', path.join(__dirname, 'preload.js'));
+
   createWindow();
-  // 自动启动代理
-  await startProxy(PROXY_PORT);
+  console.log('[ds-monitor] 窗口已创建');
+
+  // 自动启动代理（端口被占则尝试 +1 +2 …）
+  let proxyStarted = false;
+  for (let attempt = 0; attempt < 5; attempt++) {
+    const tryPort = PROXY_PORT + attempt;
+    if (await startProxy(tryPort)) {
+      proxyStarted = true;
+      break;
+    }
+  }
+  if (!proxyStarted) {
+    console.warn('[ds-monitor] 代理启动失败（所有端口被占），用量追踪不可用');
+  }
 });
 app.on('window-all-closed', () => {
   stopProxy();
